@@ -17,6 +17,8 @@ import torch
 from torch import nn
 from tqdm.auto import tqdm, trange
 from typing_extensions import Self
+import importlib
+import os
 
 from ...base import ImplBase, LearnableBase, LearnableConfig, save_config
 from ...constants import (
@@ -36,6 +38,8 @@ from ...logging import (
     D3RLPyLogger,
     FileAdapterFactory,
     LoggerAdapterFactory,
+    CombineAdapterFactory,
+    TensorboardAdapterFactory,
 )
 from ...metrics import EvaluatorProtocol, evaluate_qlearning_with_environment
 from ...models.torch import Policy
@@ -56,6 +60,9 @@ from ..utility import (
     build_scalers_with_transition_picker,
 )
 from .explorers import Explorer
+
+from ...models import construct_model
+from ...models import FakeEnv_tatu
 
 __all__ = [
     "QLearningAlgoImplBase",
@@ -419,6 +426,10 @@ class QLearningAlgoBase(
         Returns:
             List of result tuples (epoch, metrics) per epoch.
         """
+        logger_adapter = CombineAdapterFactory([
+            FileAdapterFactory(root_dir="d3rlpy_logs"),
+            TensorboardAdapterFactory(root_dir="tensorboard_logs"),
+        ])
         results = list(
             self.fitter(
                 dataset=dataset,
@@ -507,6 +518,7 @@ class QLearningAlgoBase(
             experiment_name=experiment_name,
             with_timestamp=with_timestamp,
         )
+        self.experiment_name = experiment_name
 
         # instantiate implementation
         if self._impl is None:
@@ -530,6 +542,12 @@ class QLearningAlgoBase(
         # save hyperparameters
         save_config(self, logger)
 
+        if self._config.use_TATU:
+            self.create_dynamics_model(dataset)
+
+            sample_episode, _ = dataset._buffer[0]
+            model_buffer = create_fifo_replay_buffer(1000000, episodes=[sample_episode])
+
         # training loop
         n_epochs = n_steps // n_steps_per_epoch
         total_step = 0
@@ -543,13 +561,40 @@ class QLearningAlgoBase(
                 desc=f"Epoch {int(epoch)}/{n_epochs}",
             )
 
+            if self._config.use_TATU:
+                rollout_range_gen = tqdm(
+                    range(10),
+                    desc="Rollout",
+                )
+                for _ in rollout_range_gen:
+                    self.rollout_transitions(dataset, model_buffer)
+
             for itr in range_gen:
                 with logger.measure_time("step"):
                     # pick transitions
                     with logger.measure_time("sample_batch"):
-                        batch = dataset.sample_transition_batch(
-                            self._config.batch_size
-                        )
+                        if self._config.use_TATU:
+                            real_sample_size = int(self._config.batch_size * self._config.real_ratio)
+                            fake_sample_size = self._config.batch_size - real_sample_size
+                            real_batch = dataset.sample_transition_batch(
+                                real_sample_size
+                            )
+                            fake_batch = model_buffer.sample_transition_batch(
+                                fake_sample_size
+                            )
+                            batch = TransitionMiniBatch(
+                                observations=np.concatenate([real_batch.observations, fake_batch.observations], axis=0),
+                                actions=np.concatenate([real_batch.actions, fake_batch.actions], axis=0),
+                                next_observations=np.concatenate([real_batch.next_observations, fake_batch.next_observations], axis=0),
+                                rewards=np.concatenate([real_batch.rewards, fake_batch.rewards], axis=0),
+                                terminals=np.concatenate([real_batch.terminals, fake_batch.terminals], axis=0),
+                                intervals=np.concatenate([real_batch.intervals, fake_batch.intervals], axis=0),
+                                transitions=real_batch.transitions+fake_batch.transitions
+                            )
+                        else:
+                            batch = dataset.sample_transition_batch(
+                                self._config.batch_size
+                            )
 
                     # update parameters
                     with logger.measure_time("algorithm_update"):
@@ -992,3 +1037,106 @@ class QLearningAlgoBase(
         """
         assert self._impl, IMPL_NOT_INITIALIZED_ERROR
         self._impl.reset_optimizer_states()
+
+    def create_dynamics_model(self, dataset: ReplayBufferBase):
+        action_size = dataset.dataset_info.action_size
+        observation_size = np.prod(
+            dataset.sample_transition().observation_signature.shape
+        )
+
+        self.dynamics_model = construct_model(
+            obs_dim=observation_size,
+            act_dim=action_size,
+            hidden_dim=256,
+            num_networks=7,
+            num_elites=5,
+            model_type="mlp",
+            separate_mean_var=True,
+            load_dir=None
+        )
+
+        all_trans = dataset.sample_all_transitions()
+        train_inputs = np.concatenate((all_trans.observations, all_trans.actions), axis=-1)
+        train_outputs = np.concatenate((all_trans.rewards, all_trans.next_observations - all_trans.observations), axis=-1)
+        loss = self.dynamics_model.train(
+            train_inputs,
+            train_outputs,
+            batch_size=256,
+            max_epochs=1,
+            holdout_ratio=0.2
+        )
+
+        task_name = self.experiment_name.split('_')[1].split('-')[0]
+        import_path = f"static_fns.{task_name}"
+        self.static_fns = importlib.import_module(import_path).StaticFns
+        self.fake_env = FakeEnv_tatu(
+            self.dynamics_model,
+            self.static_fns,
+            penalty_coeff=1.,
+            penalty_learned_var=True
+        )
+
+        # compute max disc
+        observations = all_trans.observations
+        actions = all_trans.actions
+
+        max_disc = -100
+        mini_batch = 1000
+        slice_num = len(observations)// mini_batch
+        alone_num = len(observations)% mini_batch
+        for i in range(slice_num):
+            obs = observations[i*mini_batch:(i+1)*mini_batch,:]
+            act = actions[i*mini_batch:(i+1)*mini_batch,:]
+            mini_max_disc = np.max(self.fake_env.compute_disc(obs,act))
+            if mini_max_disc > max_disc:
+                max_disc = mini_max_disc
+        if alone_num != 0:
+            obs = observations[slice_num*mini_batch:,:]
+            act = actions[slice_num*mini_batch:,:]
+            mini_max_disc = np.max(self.fake_env.compute_disc(obs,act))
+            if mini_max_disc > max_disc:
+                max_disc = mini_max_disc
+        self.max_disc = max_disc
+        
+        return
+    
+    def rollout_transitions(self, dataset: ReplayBufferBase, model_buffer: ReplayBufferBase):
+        _rollout_batch_size = 5000
+        _rollout_length = 5
+        _pessimism_coef = 2.0
+
+        action_size = dataset.dataset_info.action_size
+        observation_shape = dataset.sample_transition().observation_signature.shape[0]
+
+        init_transitions = dataset.sample_transition_batch(_rollout_batch_size)
+        threshold = 1 / _pessimism_coef * self.max_disc
+        observations = init_transitions.observations
+        cumul_error = np.zeros(len(observations))
+
+        observations_batch = np.zeros((_rollout_batch_size, _rollout_length, *observation_shape))
+        actions_batch = np.zeros((_rollout_batch_size, _rollout_length, action_size))
+        rewards_batch = np.zeros((_rollout_batch_size, _rollout_length, 1))
+        terminals_batch = np.zeros((_rollout_batch_size, _rollout_length, 1)) == 1
+        batch_mask = np.zeros(_rollout_batch_size) == 0
+
+        for i in range(_rollout_length):
+            actions = self.sample_action(observations)
+            next_observations, rewards, terminals, next_cumul_error, infos = self.fake_env.step(observations, actions, cumul_error, threshold)
+            observations_batch[batch_mask,i] = observations
+            actions_batch[batch_mask,i] = actions
+            rewards_batch[batch_mask,i] = rewards
+            terminals_batch[batch_mask,i] = terminals
+        
+            nonterm_mask = (~terminals).flatten()
+            batch_mask[batch_mask] = nonterm_mask
+            if nonterm_mask.sum() == 0:
+                break
+            cumul_error = next_cumul_error[nonterm_mask]
+            observations = next_observations[nonterm_mask]
+        
+        for i in range(_rollout_batch_size):
+            for j in range(_rollout_length):
+                model_buffer.append(observations_batch[i,j], actions_batch[i,j], rewards_batch[i,j])
+                if terminals_batch[i,j]:
+                    break
+            model_buffer.clip_episode(terminals_batch[i,j])

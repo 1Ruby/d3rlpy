@@ -125,6 +125,20 @@ class ReplayBufferBase(ABC):
             Mini-batch.
         """
         raise NotImplementedError
+    
+    def sample_all_transitions(
+        self
+    ) -> TransitionMiniBatch:
+        r"""Return all transitions.
+
+        Args:
+            batch_size: Mini-batch size.
+            length: Length of partial trajectories.
+
+        Returns:
+            Mini-batch.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def dump(self, f: BinaryIO) -> None:
@@ -488,6 +502,11 @@ class ReplayBuffer(ReplayBufferBase):
     ) -> TrajectoryMiniBatch:
         return TrajectoryMiniBatch.from_partial_trajectories(
             [self.sample_trajectory(length) for _ in range(batch_size)]
+        )
+    
+    def sample_all_transitions(self):
+        return TransitionMiniBatch.from_transitions(
+            [self._transition_picker(*self._buffer[index]) for index in range(self._buffer.transition_count)]
         )
 
     def dump(self, f: BinaryIO) -> None:

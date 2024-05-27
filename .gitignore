@@ -21,3 +21,7 @@ build
 dist
 /.idea/
 *.egg-info
+
+train
+tensor
+dynamics_models/

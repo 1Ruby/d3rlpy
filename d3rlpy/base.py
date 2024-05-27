@@ -103,6 +103,9 @@ class LearnableConfig(DynamicConfig):
     action_scaler: Optional[ActionScaler] = make_action_scaler_field()
     reward_scaler: Optional[RewardScaler] = make_reward_scaler_field()
 
+    use_TATU: bool = True
+    real_ratio: float = 0.7
+
     def create(
         self, device: DeviceArg = False
     ) -> "LearnableBase[ImplBase, LearnableConfig]":

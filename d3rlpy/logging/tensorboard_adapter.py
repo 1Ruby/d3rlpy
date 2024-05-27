@@ -51,6 +51,7 @@ class TensorboardAdapter(LoggerAdapter):
         self._metrics[name] = value
 
     def after_write_metric(self, epoch: int, step: int) -> None:
+        return
         self._writer.add_hparams(
             self._params,
             self._metrics,
