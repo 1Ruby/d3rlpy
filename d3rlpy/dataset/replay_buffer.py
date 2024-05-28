@@ -535,7 +535,7 @@ class ReplayBuffer(ReplayBufferBase):
         ### update predictor
         selected = torch.Tensor(np.concatenate([select_transitions.observations, select_transitions.actions], axis=1))
         self.RND_optim.zero_grad()
-        y = self.RNDtarget(selected)
+        y = self.RNDtarget(selected).detach()
         y_pred = self.RNDpredict(selected)
         def loss_fn(y, y_pred):
             return torch.mean((y - y_pred) ** 2)

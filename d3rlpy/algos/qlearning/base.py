@@ -36,6 +36,8 @@ from ...logging import (
     D3RLPyLogger,
     FileAdapterFactory,
     LoggerAdapterFactory,
+    TensorboardAdapterFactory,
+    CombineAdapterFactory,
 )
 from ...metrics import EvaluatorProtocol, evaluate_qlearning_with_environment
 from ...models.torch import Policy
@@ -419,6 +421,10 @@ class QLearningAlgoBase(
         Returns:
             List of result tuples (epoch, metrics) per epoch.
         """
+        logger_adapter = CombineAdapterFactory([
+            FileAdapterFactory(root_dir="d3rlpy_logs"),
+            TensorboardAdapterFactory(root_dir="tensorboard_logs"),
+        ])
         results = list(
             self.fitter(
                 dataset=dataset,
