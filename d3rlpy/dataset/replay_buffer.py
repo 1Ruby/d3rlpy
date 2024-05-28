@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import BinaryIO, List, Optional, Sequence, Type, Union
 
 import numpy as np
+import torch
 
 from ..constants import ActionSpace
 from ..logging import LOG
@@ -39,6 +40,31 @@ __all__ = [
     "create_infinite_replay_buffer",
 ]
 
+import torch.nn as nn
+
+class RNDNet(nn.Module):
+    def __init__(
+        self,
+        observation_size,
+        action_size
+    ):
+        super(RNDNet, self).__init__()
+        self.observation_size = observation_size
+        self.action_size = action_size
+        self.net = nn.Sequential(
+            nn.Linear(observation_size + action_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128)
+        )
+        self.init_weight()
+    
+    def init_weight(self, std=1.0):
+        for net in self.net:
+            if isinstance(net, nn.Linear):
+                nn.init.normal_(net.weight, std=std)
+    
+    def forward(self, x):
+        return self.net(x)
 
 class ReplayBufferBase(ABC):
     """An interface of ReplayBuffer."""
@@ -449,6 +475,13 @@ class ReplayBuffer(ReplayBufferBase):
             action_size=action_size,
         )
 
+        ### Random Network Distillation
+        observation_size = observation_signature.shape[0][0]
+        self.RNDtarget = RNDNet(observation_size, action_size)
+        self.RNDpredict = RNDNet(observation_size, action_size)
+        self.RNDtarget.init_weight(4.0)
+        self.RND_optim = torch.optim.Adam(params=self.RNDpredict.parameters(), lr=1e-3)
+
         if episodes:
             for episode in episodes:
                 self.append_episode(episode)
@@ -474,9 +507,43 @@ class ReplayBuffer(ReplayBufferBase):
         return self._transition_picker(episode, transition_index)
 
     def sample_transition_batch(self, batch_size: int) -> TransitionMiniBatch:
-        return TransitionMiniBatch.from_transitions(
-            [self.sample_transition() for _ in range(batch_size)]
-        )
+
+        ### Change here to modify the ratio of selecting transitions.
+        RNDratio = 2.0
+        ###
+
+        sample_batch_size = int(RNDratio * batch_size)
+        sample_indices = [np.random.randint(self._buffer.transition_count) for _ in range(sample_batch_size)]
+        _sample_transitions = [None for _ in range(sample_batch_size)]
+        for i in range(sample_batch_size):
+            episode, transition_index = self._buffer[sample_indices[i]]
+            _sample_transitions[i] = self._transition_picker(episode, transition_index)
+        sample_transitions = TransitionMiniBatch.from_transitions(_sample_transitions)
+
+        sample = torch.Tensor(np.concatenate([sample_transitions.observations, sample_transitions.actions], axis=1))
+        RNDtarget_out = self.RNDtarget(sample)
+        RNDpredict_out = self.RNDpredict(sample)
+        curiosity = torch.mean((RNDtarget_out - RNDpredict_out) ** 2, axis=1)
+
+        _select_transitions = [None for _ in range(batch_size)]
+        select_indices = torch.topk(curiosity, batch_size, largest=True).indices
+        for i in range(batch_size):
+            episode, transition_index = self._buffer[sample_indices[select_indices[i]]]
+            _select_transitions[i] = self._transition_picker(episode, transition_index)
+        select_transitions = TransitionMiniBatch.from_transitions(_select_transitions)
+
+        ### update predictor
+        selected = torch.Tensor(np.concatenate([select_transitions.observations, select_transitions.actions], axis=1))
+        self.RND_optim.zero_grad()
+        y = self.RNDtarget(selected)
+        y_pred = self.RNDpredict(selected)
+        def loss_fn(y, y_pred):
+            return torch.mean((y - y_pred) ** 2)
+        loss = loss_fn(y, y_pred)
+        loss.backward()
+        self.RND_optim.step()
+
+        return select_transitions
 
     def sample_trajectory(self, length: int) -> PartialTrajectory:
         index = np.random.randint(self._buffer.transition_count)
