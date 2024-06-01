@@ -103,8 +103,13 @@ class LearnableConfig(DynamicConfig):
     action_scaler: Optional[ActionScaler] = make_action_scaler_field()
     reward_scaler: Optional[RewardScaler] = make_reward_scaler_field()
 
-    use_TATU: bool = True
+    use_TATU: bool = False
     real_ratio: float = 0.7
+    dm_max_epochs = 200
+    dm_max_epochs_since_update = 5
+    rollout_batch_size = 5000
+    rollout_length = 5
+    pessimism_coef = 4.0
 
     def create(
         self, device: DeviceArg = False

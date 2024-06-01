@@ -69,6 +69,18 @@ class LoggerAdapter(Protocol):
             value: Metric value.
         """
 
+    def write_loss(
+        self, epoch: int, step: int, name: str, value: float
+    ) -> None:
+        r"""Writes loss.
+
+        Args:
+            epoch: Epoch.
+            step: Training step.
+            name: Metric name.
+            value: Metric value.
+        """
+
     def after_write_metric(self, epoch: int, step: int) -> None:
         r"""Callback executed after write_metric method.
 
@@ -131,21 +143,25 @@ class D3RLPyLogger:
     def add_metric(self, name: str, value: float) -> None:
         self._metrics_buffer[name].append(value)
 
-    def commit(self, epoch: int, step: int) -> Dict[str, float]:
+    def commit(self, epoch: int, step: int, add_metric=True) -> Dict[str, float]:
         self._adapter.before_write_metric(epoch, step)
 
         metrics = {}
         for name, buffer in self._metrics_buffer.items():
             metric = sum(buffer) / len(buffer)
-            self._adapter.write_metric(epoch, step, name, metric)
+            if add_metric:
+                self._adapter.write_metric(epoch, step, name, metric)
+            else:
+                self._adapter.write_loss(epoch, step, name, metric)
             metrics[name] = metric
 
-        LOG.info(
-            f"{self._experiment_name}: epoch={epoch} step={step}",
-            epoch=epoch,
-            step=step,
-            metrics=metrics,
-        )
+        if add_metric:
+            LOG.info(
+                f"{self._experiment_name}: epoch={epoch} step={step}",
+                epoch=epoch,
+                step=step,
+                metrics=metrics,
+            )
 
         self._adapter.after_write_metric(epoch, step)
 

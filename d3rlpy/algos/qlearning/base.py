@@ -543,8 +543,7 @@ class QLearningAlgoBase(
         save_config(self, logger)
 
         if self._config.use_TATU:
-            self.create_dynamics_model(dataset)
-
+            self.create_dynamics_model(dataset, logger)
             sample_episode, _ = dataset._buffer[0]
             model_buffer = create_fifo_replay_buffer(1000000, episodes=[sample_episode])
 
@@ -1038,7 +1037,7 @@ class QLearningAlgoBase(
         assert self._impl, IMPL_NOT_INITIALIZED_ERROR
         self._impl.reset_optimizer_states()
 
-    def create_dynamics_model(self, dataset: ReplayBufferBase):
+    def create_dynamics_model(self, dataset: ReplayBufferBase, logger:D3RLPyLogger):
         action_size = dataset.dataset_info.action_size
         observation_size = np.prod(
             dataset.sample_transition().observation_signature.shape
@@ -1061,9 +1060,11 @@ class QLearningAlgoBase(
         loss = self.dynamics_model.train(
             train_inputs,
             train_outputs,
+            logger,
             batch_size=256,
-            max_epochs=1,
-            holdout_ratio=0.2
+            max_epochs=self._config.dm_max_epochs,
+            max_epochs_since_update=self._config.dm_max_epochs_since_update,
+            holdout_ratio=0.2,
         )
 
         task_name = self.experiment_name.split('_')[1].split('-')[0]
@@ -1101,25 +1102,23 @@ class QLearningAlgoBase(
         return
     
     def rollout_transitions(self, dataset: ReplayBufferBase, model_buffer: ReplayBufferBase):
-        _rollout_batch_size = 5000
-        _rollout_length = 5
-        _pessimism_coef = 2.0
-
+        rollout_batch_size = self._config.rollout_batch_size
+        rollout_length = self._config.rollout_length
         action_size = dataset.dataset_info.action_size
         observation_shape = dataset.sample_transition().observation_signature.shape[0]
 
-        init_transitions = dataset.sample_transition_batch(_rollout_batch_size)
-        threshold = 1 / _pessimism_coef * self.max_disc
+        init_transitions = dataset.sample_transition_batch(rollout_batch_size)
+        threshold = 1 / self._config.pessimism_coef * self.max_disc
         observations = init_transitions.observations
         cumul_error = np.zeros(len(observations))
 
-        observations_batch = np.zeros((_rollout_batch_size, _rollout_length, *observation_shape))
-        actions_batch = np.zeros((_rollout_batch_size, _rollout_length, action_size))
-        rewards_batch = np.zeros((_rollout_batch_size, _rollout_length, 1))
-        terminals_batch = np.zeros((_rollout_batch_size, _rollout_length, 1)) == 1
-        batch_mask = np.zeros(_rollout_batch_size) == 0
+        observations_batch = np.zeros((rollout_batch_size, rollout_length, *observation_shape))
+        actions_batch = np.zeros((rollout_batch_size, rollout_length, action_size))
+        rewards_batch = np.zeros((rollout_batch_size, rollout_length, 1))
+        terminals_batch = np.zeros((rollout_batch_size, rollout_length, 1)) == 1
+        batch_mask = np.zeros(rollout_batch_size) == 0
 
-        for i in range(_rollout_length):
+        for i in range(rollout_length):
             actions = self.sample_action(observations)
             next_observations, rewards, terminals, next_cumul_error, infos = self.fake_env.step(observations, actions, cumul_error, threshold)
             observations_batch[batch_mask,i] = observations
@@ -1134,9 +1133,9 @@ class QLearningAlgoBase(
             cumul_error = next_cumul_error[nonterm_mask]
             observations = next_observations[nonterm_mask]
         
-        for i in range(_rollout_batch_size):
-            for j in range(_rollout_length):
+        for i in range(rollout_batch_size):
+            for j in range(rollout_length):
                 model_buffer.append(observations_batch[i,j], actions_batch[i,j], rewards_batch[i,j])
                 if terminals_batch[i,j]:
                     break
-            model_buffer.clip_episode(terminals_batch[i,j])
+            model_buffer.clip_episode(False)

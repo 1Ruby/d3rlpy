@@ -4,6 +4,9 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import d3rlpy
 
+import gym
+from gym.wrappers import RecordVideo
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -47,11 +50,16 @@ def main() -> None:
         dataset,
         n_steps=500000,
         n_steps_per_epoch=1000,
-        save_interval=10,
+        save_interval=100,
         callback=callback,
         evaluators={"environment": d3rlpy.metrics.EnvironmentEvaluator(env)},
         experiment_name=f"IQL_{args.dataset}_{args.seed}",
     )
+
+    d3rlpy.notebook_utils.start_virtual_display()
+    env = RecordVideo(gym.make("Hopper-v2", render_mode="rgb_array"), './video/iql_hopper')
+    reward = d3rlpy.metrics.evaluate_qlearning_with_environment(iql, env)
+    print(reward)
 
 
 if __name__ == "__main__":

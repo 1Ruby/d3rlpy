@@ -364,7 +364,7 @@ class BNN:
     # Model Methods #
     #################
 
-    def train(self, inputs, targets,
+    def train(self, inputs, targets, logger=None,
               batch_size=32, max_epochs=None, max_epochs_since_update=5,
               hide_progress=False, holdout_ratio=0.0, max_logging=1000, max_grad_updates=None, timer=None, max_t=None):
         """Trains/Continues network training
@@ -457,6 +457,13 @@ class BNN:
                     progress.set_description(named_losses)
 
                     break_train = self._save_best(epoch, holdout_losses)
+
+                    if logger is not None:
+                        for i in range(len(losses)):
+                            logger.add_metric('M{}'.format(i), losses[i])
+                        for i in range(len(holdout_losses)):
+                            logger.add_metric('V{}'.format(i), holdout_losses[i])
+                        logger.commit(epoch,0,False)
 
             progress.update()
             t = time.time() - t0

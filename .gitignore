@@ -25,3 +25,4 @@ dist
 train
 tensor
 dynamics_models/
+video/

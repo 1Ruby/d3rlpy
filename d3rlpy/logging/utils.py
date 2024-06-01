@@ -32,6 +32,12 @@ class CombineAdapter(LoggerAdapter):
         for adapter in self._adapters:
             adapter.write_metric(epoch, step, name, value)
 
+    def write_loss(
+            self, epoch: int, step: int, name: str, value: float
+    ) -> None:
+        for adapter in self._adapters:
+            adapter.write_loss(epoch, step, name, value)
+
     def after_write_metric(self, epoch: int, step: int) -> None:
         for adapter in self._adapters:
             adapter.after_write_metric(epoch, step)
