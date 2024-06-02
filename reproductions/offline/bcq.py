@@ -38,14 +38,16 @@ def main() -> None:
         n_action_samples=100,
     )
     results = []
+    acc_rewards = []
     if args.use_state_coverage:
+        stds = []
         for episode in dataset.episodes:
             rewards = episode.rewards
             states = np.array(episode.observations)
             acc_reward = 0
             for i in range(len(rewards)):
                 acc_reward += rewards[i] * gamma**i
-            acc_rewards.append(float(acc_reward))
+            acc_rewards.append(acc_reward[0])
             std = np.std(states, axis=0)
             stds.append(np.mean(std))
 
@@ -85,7 +87,7 @@ def main() -> None:
             acc_reward = 0
             for i in range(len(rewards)):
                 acc_reward += rewards[i] * gamma**i
-            acc_rewards.append(float(acc_reward))
+            acc_rewards.append(acc_reward[0])
         acc_rewards_sorted = np.sort(np.array(acc_rewards))
         deciles = np.percentile(acc_rewards_sorted, np.arange(0, 100, 10))
         for i in range(10):
