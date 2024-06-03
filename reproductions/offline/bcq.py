@@ -105,8 +105,8 @@ def main() -> None:
                 experiment_name=f"BCQ_{args.dataset}_{args.seed}_reward_{i}",
             )
             d3rlpy.notebook_utils.start_virtual_display()
-            env = RecordVideo(gym.make("Halfcheetah-v2", render_mode="rgb_array"), f'./video/bcq_halfcheetah_trim_reward_{i}')
-            reward = d3rlpy.metrics.evaluate_qlearning_with_environment(bcq, env)
+            eval_env = RecordVideo(gym.make("HalfCheetah-v2", render_mode="rgb_array"), f'./video/bcq_halfcheetah_trim_reward_{i}')
+            reward = d3rlpy.metrics.evaluate_qlearning_with_environment(bcq, eval_env)
             print(reward)
             results.append(reward)
         result_df = pd.DataFrame(columns=['trim_perc', 'reward'])
