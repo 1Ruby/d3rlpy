@@ -74,14 +74,14 @@ def main() -> None:
             )
             cql.save_model(f"CQL_{args.dataset}_{args.seed}_state_{i}.d3")
             d3rlpy.notebook_utils.start_virtual_display()
-            env = RecordVideo(gym.make("Halfcheetah-v2", render_mode="rgb_array"), f'./video/iql_halfcheetah_trim_state_{i}')
-            reward = d3rlpy.metrics.evaluate_qlearning_with_environment(cql, env)
+            eval_env = RecordVideo(gym.make("HalfCheetah-v2", render_mode="rgb_array"), f'./video/cql_halfcheetah_trim_state_{i}')
+            reward = d3rlpy.metrics.evaluate_qlearning_with_environment(cql, eval_env)
             print(reward)
             results.append(reward)
         result_df = pd.DataFrame(columns=['trim_perc', 'reward'])
         result_df['trim_perc'] = np.arange(0, 100, 10)
         result_df['reward'] = results
-        result_df.to_csv(f'iql_{args.dataset}_{args.seed}_state_results.csv')
+        result_df.to_csv(f'cql_{args.dataset}_{args.seed}_state_results.csv')
     else:
         for episode in dataset.episodes:
             rewards = episode.rewards
